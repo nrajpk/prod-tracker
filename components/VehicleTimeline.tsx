@@ -245,6 +245,13 @@ function TimelineField({ field }: { field: StageSupportingField }) {
         <TooltipLabel label={field.label} />
       </dt>
       <dd className="mt-0.5 break-words text-sm font-medium text-slate-800">{field.value}</dd>
+      {field.secondaryValue && (
+        <dd className="mt-0.5 text-xs font-medium text-slate-500">
+          {field.secondaryLabel ? `${field.secondaryLabel}: ` : ''}
+          {field.secondaryValue}
+        </dd>
+      )}
+      <dd className="mt-1 text-[11px] font-semibold text-slate-400">{fieldOwnerLabel(field.owner)}</dd>
     </div>
   );
 }
@@ -274,6 +281,7 @@ function shouldShowInfoIcon(label: string) {
     'Health',
     'Planned Finish',
     'Actual / Forecast Finish',
+    'MEVA Arrival Date',
     'Shipping Days Alpine to MEVA',
     'Design Change / Confirmation Time',
     'Actual Production Time',
@@ -284,6 +292,22 @@ function shouldShowInfoIcon(label: string) {
     'Ready Since',
     'Shipping Days MEVA to Alpine',
   ].includes(label);
+}
+
+function fieldOwnerLabel(owner: StageSupportingField['owner']) {
+  if (owner === 'ALPINE') {
+    return 'Managed by Alpine';
+  }
+
+  if (owner === 'MEVA') {
+    return 'Managed by MEVA';
+  }
+
+  if (owner === 'SYSTEM') {
+    return 'Calculated';
+  }
+
+  return 'Shared ownership';
 }
 
 function DelayAlert({ text, className = '', compact = false }: { text: string; className?: string; compact?: boolean }) {

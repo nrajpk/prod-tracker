@@ -25,8 +25,17 @@ import {
   type DashboardBucketKey,
   type JourneyPhase,
 } from '@/lib/vehicleTimeline';
+import {
+  canObjectToField,
+  canEditField,
+  getFieldOwner,
+  getFieldTooltip as getFieldHelp,
+  type FieldKey,
+} from '@/lib/fieldPermissions';
 import type {
   AppSession,
+  FieldObjection,
+  FieldObjectionStatus,
   OperationalRisk,
   ProductionStatus,
   ProductionVehicle,
@@ -37,6 +46,39 @@ import type {
 
 const statusOrder = STAGE_ORDER;
 const SHOW_WORKFLOW_BOARD = false;
+
+const detailUpdateFields = [
+  { key: 'vehicleNumber', label: 'Vehicle #', kind: 'text' },
+  { key: 'vehicle', label: 'Vehicle', kind: 'text' },
+  { key: 'designStyle', label: 'Build / Design', kind: 'text' },
+  { key: 'modelYear', label: 'Model Year', kind: 'text' },
+  { key: 'vin', label: 'VIN', kind: 'text' },
+  { key: 'armoringLevel', label: 'Armouring Level', kind: 'text' },
+  { key: 'chassisShippedFromAlpineDate', label: 'Chassis shipped from Alpine', kind: 'date' },
+  { key: 'designChangeRequestedDate', label: 'Design change requested', kind: 'date' },
+  { key: 'designChangeCompletedDate', label: 'Design change / confirmation time', kind: 'date' },
+  { key: 'designApprovedDate', label: 'Design approval', kind: 'date' },
+  { key: 'productionStatus', label: 'Stage', kind: 'status' },
+  { key: 'expectedCompletionDate', label: 'Expected completion', kind: 'date' },
+  { key: 'actualProductionCompletionDate', label: 'Production completed', kind: 'date' },
+  { key: 'actualCompletionDate', label: 'Final completion', kind: 'date' },
+  { key: 'shippedFromMevaDate', label: 'Shipped from MEVA', kind: 'date' },
+  { key: 'arrivedAtAlpineDate', label: 'Arrived at Alpine', kind: 'date' },
+  { key: 'currentStatus', label: 'Current status', kind: 'text' },
+  { key: 'notes', label: 'Latest note', kind: 'textarea' },
+  { key: 'alpineAssessment', label: 'Alpine assessment', kind: 'textarea' },
+  { key: 'mevaNotes', label: 'Private MEVA notes', kind: 'textarea' },
+] as const satisfies ReadonlyArray<{ key: FieldKey; label: string; kind: 'date' | 'status' | 'text' | 'textarea' }>;
+
+const inlineUpdateFields = [
+  { key: 'productionStatus', label: 'Stage', kind: 'status' },
+  { key: 'expectedCompletionDate', label: 'Planned', kind: 'date' },
+  { key: 'actualCompletionDate', label: 'Actual', kind: 'date' },
+  { key: 'notes', label: 'Latest note', kind: 'text' },
+] as const satisfies ReadonlyArray<{ key: FieldKey; label: string; kind: 'date' | 'status' | 'text' }>;
+
+type DetailUpdateKey = (typeof detailUpdateFields)[number]['key'];
+type InlineUpdateKey = (typeof inlineUpdateFields)[number]['key'];
 
 const riskStyles: Record<OperationalRisk, string> = {
   'On Time': 'border-emerald-200 bg-emerald-50 text-emerald-800',
@@ -74,6 +116,14 @@ const issueStatusLabels: Record<VehicleDispute['status'], string> = {
   Resolved: 'Closed',
 };
 
+const fieldObjectionStatusStyles: Record<FieldObjectionStatus, string> = {
+  Open: 'border-red-200 bg-red-50 text-red-700',
+  Reviewed: 'border-amber-200 bg-amber-50 text-amber-700',
+  Accepted: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  Rejected: 'border-slate-200 bg-slate-100 text-slate-700',
+  Resolved: 'border-slate-200 bg-slate-100 text-slate-500',
+};
+
 const fetchVehicles = async (): Promise<VehiclesResponse> => {
   const res = await fetch('/api/vehicles');
 
@@ -90,6 +140,16 @@ const fetchDisputes = async (): Promise<{ data: VehicleDispute[] }> => {
 
   if (!res.ok) {
     throw new Error('Could not load disputes');
+  }
+
+  return res.json();
+};
+
+const fetchFieldObjections = async (): Promise<{ data: FieldObjection[] }> => {
+  const res = await fetch('/api/field-objections');
+
+  if (!res.ok) {
+    throw new Error('Could not load field objections');
   }
 
   return res.json();
@@ -157,6 +217,7 @@ const briefCopy: Record<BriefKey, { title: string; detail: string }> = {
 };
 
 type ResultView = 'table' | 'cards';
+type DetailDrawerMode = 'status' | 'edit';
 
 const vehicleImageCatalog: Record<string, { key: string; label: string }> = {
   'VALOR PLUS': { key: 'valor-plus', label: 'MEVA Valor Plus' },
@@ -198,6 +259,41 @@ function getVehicleImage(vehicle: ProductionVehicle) {
     src: `/images/alpine/${match.key}.png`,
     label: match.label,
   };
+}
+
+function getVehicleDraftValue(vehicle: ProductionVehicle, key: FieldKey) {
+  const value = vehicle[key as keyof ProductionVehicle];
+  return value === undefined || value === null ? '' : String(value);
+}
+
+function getOwnerLabel(key: FieldKey) {
+  const owner = getFieldOwner(key);
+
+  if (owner === 'ALPINE') {
+    return 'Managed by Alpine';
+  }
+
+  if (owner === 'MEVA') {
+    return 'Managed by MEVA';
+  }
+
+  if (owner === 'SYSTEM') {
+    return 'Calculated';
+  }
+
+  return 'Shared ownership';
+}
+
+function fieldInputClass(canEdit: boolean, hasActiveObjection = false) {
+  if (hasActiveObjection) {
+    return 'mt-1 min-h-10 w-full rounded-md border border-red-300 bg-red-50 px-3 text-sm font-medium normal-case text-red-900';
+  }
+
+  return `mt-1 min-h-10 w-full rounded-md border px-3 text-sm font-medium normal-case ${
+    canEdit
+      ? 'border-slate-300 bg-white text-slate-800'
+      : 'border-slate-200 bg-slate-50 text-slate-500'
+  }`;
 }
 
 function getBriefVehicles(
@@ -259,10 +355,20 @@ export default function DashboardGrid({ session }: { session: AppSession }) {
     enabled: session.role !== 'GUEST',
     staleTime: 1000 * 30,
   });
+  const fieldObjectionsQuery = useQuery({
+    queryKey: ['field-objections'],
+    queryFn: fetchFieldObjections,
+    enabled: session.role !== 'GUEST',
+    staleTime: 1000 * 30,
+  });
 
   const vehicles = useMemo(() => data?.data ?? [], [data?.data]);
   const permissions = data?.permissions;
   const disputes = disputesQuery.data?.data ?? [];
+  const fieldObjections = fieldObjectionsQuery.data?.data ?? [];
+  const actionableFieldObjections = fieldObjections.filter(
+    (objection) => objection.responsibleRole === session.role && objection.status !== 'Resolved',
+  );
   const facilities = useMemo(
     () => Array.from(new Set(vehicles.map((vehicle) => vehicle.facility).filter(Boolean))).sort(),
     [vehicles],
@@ -346,6 +452,14 @@ export default function DashboardGrid({ session }: { session: AppSession }) {
   return (
     <div className="space-y-6">
       <RoleBanner session={session} permissions={permissions} />
+      {actionableFieldObjections.length > 0 && (
+        <FieldObjectionNotifications
+          objections={actionableFieldObjections}
+          vehicles={vehicles}
+          onSelectVehicle={setSelectedVehicle}
+          onRefresh={() => queryClient.invalidateQueries({ queryKey: ['field-objections'] })}
+        />
+      )}
 
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
         <MetricCard
@@ -558,10 +672,12 @@ export default function DashboardGrid({ session }: { session: AppSession }) {
           permissions={permissions}
           session={session}
           disputes={disputes.filter((dispute) => dispute.vehicleId === selectedVehicle.id)}
+          fieldObjections={fieldObjections.filter((objection) => objection.vehicleId === selectedVehicle.id)}
           onClose={() => setSelectedVehicle(null)}
           onRefresh={() => {
             queryClient.invalidateQueries({ queryKey: ['production-vehicles'] });
             queryClient.invalidateQueries({ queryKey: ['vehicle-disputes'] });
+            queryClient.invalidateQueries({ queryKey: ['field-objections'] });
           }}
         />
       )}
@@ -571,7 +687,7 @@ export default function DashboardGrid({ session }: { session: AppSession }) {
           briefKey={activeBrief}
           vehicles={activeBriefVehicles}
           issueMap={activeBriefIssueMap}
-          permissions={permissions}
+          session={session}
           onClose={() => setActiveBrief(null)}
           onOpenVehicle={(vehicle) => setSelectedVehicle(vehicle)}
           onRefresh={() => {
@@ -587,9 +703,9 @@ export default function DashboardGrid({ session }: { session: AppSession }) {
 function RoleBanner({ session, permissions }: { session: AppSession; permissions: RolePermissions }) {
   const description =
     session.role === 'MEVA'
-      ? 'You can update vehicle stages, dates, notes, and answer issues.'
+      ? 'You can update MEVA-managed production fields and answer issues.'
       : session.role === 'ALPINE'
-        ? 'You can view vehicle progress and raise an issue if something looks wrong.'
+        ? 'You can update Alpine-managed movement and receipt fields, and raise issues when needed.'
         : 'You can view the tracker only.';
 
   return (
@@ -602,11 +718,102 @@ function RoleBanner({ session, permissions }: { session: AppSession; permissions
           <p className="mt-1 text-sm text-slate-700">{description}</p>
         </div>
         <div className="flex flex-wrap gap-2 text-xs font-semibold">
-          <PermissionPill active={permissions.canEditProduction} label="Can edit vehicles" />
+          <PermissionPill active={session.role === 'MEVA'} label="MEVA field editor" />
+          <PermissionPill active={session.role === 'ALPINE'} label="Alpine field editor" />
           <PermissionPill active={permissions.canOpenDisputes} label="Can raise issues" />
           <PermissionPill active={permissions.canRespondToDisputes} label="Can answer issues" />
           <PermissionPill active={permissions.canViewInternalNotes} label="Can see MEVA notes" />
         </div>
+      </div>
+    </section>
+  );
+}
+
+function FieldObjectionNotifications({
+  objections,
+  vehicles,
+  onSelectVehicle,
+  onRefresh,
+}: {
+  objections: FieldObjection[];
+  vehicles: ProductionVehicle[];
+  onSelectVehicle: (vehicle: ProductionVehicle) => void;
+  onRefresh: () => void;
+}) {
+  const [savingId, setSavingId] = useState('');
+  const visibleObjections = objections.slice(0, 4);
+
+  async function updateStatus(objection: FieldObjection, status: FieldObjectionStatus) {
+    setSavingId(objection.id);
+
+    const response = await fetch(`/api/field-objections/${objection.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+
+    setSavingId('');
+
+    if (response.ok) {
+      onRefresh();
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-red-200 bg-red-50 p-4">
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-base font-semibold text-red-900">Field objections need your response</h2>
+          <p className="text-sm text-red-700">
+            {objections.length} active objection{objections.length === 1 ? '' : 's'} assigned to your team.
+          </p>
+        </div>
+        <span className="rounded-full border border-red-200 bg-white px-3 py-1 text-xs font-semibold text-red-700">
+          Notified
+        </span>
+      </div>
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        {visibleObjections.map((objection) => {
+          const vehicle = vehicles.find((item) => item.id === objection.vehicleId);
+
+          return (
+            <div key={objection.id} className="rounded-md border border-red-200 bg-white p-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-950">
+                    {vehicle?.vehicleNumber || objection.vehicleId} / {objection.fieldLabel}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">{objection.reason}</div>
+                </div>
+                <span className={`rounded-full border px-2 py-1 text-xs font-semibold ${fieldObjectionStatusStyles[objection.status]}`}>
+                  {objection.status}
+                </span>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {vehicle && (
+                  <button
+                    className="rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700"
+                    onClick={() => onSelectVehicle(vehicle)}
+                    type="button"
+                  >
+                    Open vehicle
+                  </button>
+                )}
+                {(['Reviewed', 'Accepted', 'Rejected', 'Resolved'] as FieldObjectionStatus[]).map((status) => (
+                  <button
+                    key={status}
+                    className="rounded-md border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 disabled:opacity-50"
+                    disabled={savingId === objection.id}
+                    onClick={() => updateStatus(objection, status)}
+                    type="button"
+                  >
+                    {status}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
@@ -715,7 +922,7 @@ function BriefDrawer({
   briefKey,
   vehicles,
   issueMap,
-  permissions,
+  session,
   onClose,
   onOpenVehicle,
   onRefresh,
@@ -723,7 +930,7 @@ function BriefDrawer({
   briefKey: BriefKey;
   vehicles: ProductionVehicle[];
   issueMap: Map<string, VehicleDispute[]>;
-  permissions: RolePermissions;
+  session: AppSession;
   onClose: () => void;
   onOpenVehicle: (vehicle: ProductionVehicle) => void;
   onRefresh: () => void;
@@ -731,6 +938,7 @@ function BriefDrawer({
   const sortedVehicles = sortBriefVehicles(briefKey, vehicles);
   const openIssueCount = sortedVehicles.reduce((total, vehicle) => total + (issueMap.get(vehicle.id)?.length || 0), 0);
   const copy = briefCopy[briefKey];
+  const canUseQuickEdit = inlineUpdateFields.some((field) => canEditField(session.role, field.key));
 
   return (
     <div className="fixed inset-0 z-40 bg-slate-950/25">
@@ -759,7 +967,7 @@ function BriefDrawer({
                 {openIssueCount} open issues
               </span>
             )}
-            {permissions.canEditProduction ? (
+            {canUseQuickEdit ? (
               <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-700">
                 Edit here
               </span>
@@ -783,7 +991,7 @@ function BriefDrawer({
                   key={vehicle.id}
                   vehicle={vehicle}
                   issues={issueMap.get(vehicle.id) || []}
-                  permissions={permissions}
+                  userRole={session.role}
                   onOpenVehicle={onOpenVehicle}
                   onRefresh={onRefresh}
                 />
@@ -799,22 +1007,28 @@ function BriefDrawer({
 function BriefVehicleRow({
   vehicle,
   issues,
-  permissions,
+  userRole,
   onOpenVehicle,
   onRefresh,
 }: {
   vehicle: ProductionVehicle;
   issues: VehicleDispute[];
-  permissions: RolePermissions;
+  userRole: AppSession['role'];
   onOpenVehicle: (vehicle: ProductionVehicle) => void;
   onRefresh: () => void;
 }) {
-  const [productionStatus, setProductionStatus] = useState(vehicle.productionStatus);
-  const [expectedCompletionDate, setExpectedCompletionDate] = useState(vehicle.expectedCompletionDate || '');
-  const [actualCompletionDate, setActualCompletionDate] = useState(vehicle.actualCompletionDate || '');
-  const [notes, setNotes] = useState(vehicle.notes || '');
+  const [draft, setDraft] = useState<Record<InlineUpdateKey, string>>(() =>
+    inlineUpdateFields.reduce(
+      (values, field) => ({
+        ...values,
+        [field.key]: getVehicleDraftValue(vehicle, field.key),
+      }),
+      {} as Record<InlineUpdateKey, string>,
+    ),
+  );
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const editableInlineFields = inlineUpdateFields.filter((field) => canEditField(userRole, field.key));
 
   async function saveInlineUpdate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -824,12 +1038,12 @@ function BriefVehicleRow({
     const response = await fetch(`/api/vehicles/${vehicle.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        productionStatus,
-        expectedCompletionDate,
-        actualCompletionDate,
-        notes,
-      }),
+      body: JSON.stringify(
+        Object.fromEntries(
+          editableInlineFields
+            .map((field) => [field.key, draft[field.key]]),
+        ),
+      ),
     });
 
     setIsSaving(false);
@@ -889,49 +1103,17 @@ function BriefVehicleRow({
         </div>
       )}
 
-      {permissions.canEditProduction ? (
+      {editableInlineFields.length > 0 ? (
         <form onSubmit={saveInlineUpdate} className="mt-4 grid gap-3 lg:grid-cols-[1.25fr_1fr_1fr_1.5fr_auto]">
-          <label className="text-xs font-semibold uppercase text-slate-500">
-            Stage
-            <select
-              className="mt-1 min-h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-medium normal-case text-slate-800"
-              value={productionStatus}
-              onChange={(event) => setProductionStatus(event.target.value as ProductionStatus)}
-            >
-              {statusOrder.map((status) => (
-                <option key={status} value={status}>
-                  {status}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-xs font-semibold uppercase text-slate-500">
-            Planned
-            <input
-              className="mt-1 min-h-10 w-full rounded-md border border-slate-300 px-3 text-sm font-medium normal-case text-slate-800"
-              type="date"
-              value={expectedCompletionDate}
-              onChange={(event) => setExpectedCompletionDate(event.target.value)}
+          {inlineUpdateFields.map((field) => (
+            <InlineEditableField
+              key={field.key}
+              field={field}
+              value={draft[field.key]}
+              canEdit={canEditField(userRole, field.key)}
+              onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))}
             />
-          </label>
-          <label className="text-xs font-semibold uppercase text-slate-500">
-            Actual
-            <input
-              className="mt-1 min-h-10 w-full rounded-md border border-slate-300 px-3 text-sm font-medium normal-case text-slate-800"
-              type="date"
-              value={actualCompletionDate}
-              onChange={(event) => setActualCompletionDate(event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold uppercase text-slate-500">
-            Note
-            <input
-              className="mt-1 min-h-10 w-full rounded-md border border-slate-300 px-3 text-sm font-medium normal-case text-slate-800"
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-              placeholder="Add update"
-            />
-          </label>
+          ))}
           <div className="flex items-end gap-2">
             <button
               className="min-h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white disabled:bg-slate-400"
@@ -948,6 +1130,46 @@ function BriefVehicleRow({
         </div>
       )}
     </div>
+  );
+}
+
+function InlineEditableField({
+  field,
+  value,
+  canEdit,
+  onChange,
+}: {
+  field: (typeof inlineUpdateFields)[number];
+  value: string;
+  canEdit: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="text-xs font-semibold uppercase text-slate-500" title={getFieldHelp(field.key)}>
+      {field.label}
+      {field.kind === 'status' ? (
+        <select
+          className={fieldInputClass(canEdit)}
+          disabled={!canEdit}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          {statusOrder.map((status) => (
+            <option key={status} value={status}>
+              {status}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          className={fieldInputClass(canEdit)}
+          disabled={!canEdit}
+          type={field.kind === 'date' ? 'date' : 'text'}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      )}
+    </label>
   );
 }
 
@@ -1137,6 +1359,23 @@ function VehicleCardGrid({
 function VehicleImage({ vehicle }: { vehicle: ProductionVehicle }) {
   const [hasError, setHasError] = useState(false);
   const image = getVehicleImage(vehicle);
+  const phase = getJourneyPhase(vehicle);
+  const isScheduled = phase === 'Scheduled';
+  const isTransit = phase === 'Transit to MEVA' || phase === 'Transit to Alpine';
+
+  if (isScheduled) {
+    return (
+      <div className="relative flex aspect-[16/9] items-center justify-center bg-slate-100">
+        <div className="absolute left-3 top-3">
+          <VehicleImagePhaseBadge vehicle={vehicle} />
+        </div>
+        <div className="px-4 text-center">
+          <div className="text-sm font-semibold uppercase tracking-wide text-slate-500">Image available at MEVA</div>
+          <div className="mt-1 text-xs text-slate-400">{phase}</div>
+        </div>
+      </div>
+    );
+  }
 
   if (!image || hasError) {
     return (
@@ -1168,6 +1407,16 @@ function VehicleImage({ vehicle }: { vehicle: ProductionVehicle }) {
         quality={75}
         onError={() => setHasError(true)}
       />
+      {isTransit && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/50 px-4 text-center">
+          <div>
+            <div className="text-base font-semibold text-slate-950">{phase}</div>
+            <div className="mt-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
+              {vehicle.productionStatus}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1273,6 +1522,7 @@ function VehicleDetailPanel({
   permissions,
   session,
   disputes,
+  fieldObjections,
   onClose,
   onRefresh,
 }: {
@@ -1280,20 +1530,28 @@ function VehicleDetailPanel({
   permissions: RolePermissions;
   session: AppSession;
   disputes: VehicleDispute[];
+  fieldObjections: FieldObjection[];
   onClose: () => void;
   onRefresh: () => void;
 }) {
-  const [productionStatus, setProductionStatus] = useState(vehicle.productionStatus);
-  const [expectedCompletionDate, setExpectedCompletionDate] = useState(vehicle.expectedCompletionDate || '');
-  const [actualCompletionDate, setActualCompletionDate] = useState(vehicle.actualCompletionDate || '');
-  const [notes, setNotes] = useState(vehicle.notes || '');
-  const [mevaNotes, setMevaNotes] = useState(vehicle.mevaNotes || '');
+  const [draft, setDraft] = useState<Record<DetailUpdateKey, string>>(() =>
+    detailUpdateFields.reduce(
+      (values, field) => ({
+        ...values,
+        [field.key]: getVehicleDraftValue(vehicle, field.key),
+      }),
+      {} as Record<DetailUpdateKey, string>,
+    ),
+  );
   const [disputedField, setDisputedField] = useState('Planned finish date');
   const [disputeType, setDisputeType] = useState('Late schedule');
   const [alpineClaim, setAlpineClaim] = useState('');
   const [mevaResponses, setMevaResponses] = useState<Record<string, string>>({});
   const [message, setMessage] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [drawerMode, setDrawerMode] = useState<DetailDrawerMode>('status');
+  const editableDetailFields = detailUpdateFields.filter((field) => canEditField(session.role, field.key));
+  const activeFieldObjections = fieldObjections.filter(isActiveFieldObjection);
 
   async function updateVehicle(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1303,13 +1561,7 @@ function VehicleDetailPanel({
     const response = await fetch(`/api/vehicles/${vehicle.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        productionStatus,
-        expectedCompletionDate,
-        actualCompletionDate,
-        notes,
-        mevaNotes,
-      }),
+      body: JSON.stringify(Object.fromEntries(editableDetailFields.map((field) => [field.key, draft[field.key]]))),
     });
 
     setIsSaving(false);
@@ -1379,6 +1631,64 @@ function VehicleDetailPanel({
     onRefresh();
   }
 
+  async function createObjection(input: {
+    fieldKey: FieldKey;
+    currentValue: string;
+    reason: string;
+    suggestedValue: string;
+    comment?: string;
+  }) {
+    setIsSaving(true);
+    setMessage('');
+
+    const response = await fetch('/api/field-objections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        vehicleId: vehicle.id,
+        fieldKey: input.fieldKey,
+        currentValue: input.currentValue,
+        reason: input.reason,
+        suggestedValue: input.suggestedValue,
+        comment: input.comment,
+      }),
+    });
+
+    setIsSaving(false);
+
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+      setMessage(body?.error || 'Could not create field objection');
+      return false;
+    }
+
+    setMessage('Field objection created and assigned to the responsible team.');
+    onRefresh();
+    return true;
+  }
+
+  async function updateFieldObjection(objection: FieldObjection, status: FieldObjectionStatus) {
+    setIsSaving(true);
+    setMessage('');
+
+    const response = await fetch(`/api/field-objections/${objection.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+
+    setIsSaving(false);
+
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+      setMessage(body?.error || 'Could not update field objection');
+      return;
+    }
+
+    setMessage(`Field objection marked ${status}.`);
+    onRefresh();
+  }
+
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/30 p-4">
       <div className="ml-auto min-h-full max-w-4xl rounded-lg bg-white shadow-xl">
@@ -1405,19 +1715,44 @@ function VehicleDetailPanel({
         </div>
 
         <div className="space-y-5 p-5">
-          <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-            <h3 className="font-semibold text-slate-950">Vehicle summary</h3>
-            <div className="mt-4 grid gap-x-6 gap-y-4 sm:grid-cols-2">
-              <Info label="Vehicle #" value={cleanDisplay(vehicle.vehicleNumber) || '-'} />
-              <Info label="Build / Design" value={getBuildDesignLabel(vehicle)} />
-              <Info label="VIN" value={cleanDisplay(vehicle.vin) || '-'} />
-              <Info label="Model Year" value={vehicle.modelYear ? String(vehicle.modelYear) : '-'} />
-              <Info label="Armouring Level" value={cleanDisplay(vehicle.armoringLevel) || '-'} />
-              <Info label="Facility / Plant" value={cleanDisplay(vehicle.facility) || '-'} />
-            </div>
-          </section>
+          <div className="inline-flex rounded-md border border-slate-300 bg-slate-50 p-1">
+            <button
+              className={`min-h-9 rounded px-4 text-sm font-semibold ${
+                drawerMode === 'status' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+              }`}
+              onClick={() => setDrawerMode('status')}
+              type="button"
+            >
+              Status
+            </button>
+            <button
+              className={`min-h-9 rounded px-4 text-sm font-semibold ${
+                drawerMode === 'edit' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+              }`}
+              onClick={() => setDrawerMode('edit')}
+              type="button"
+            >
+              Edit
+            </button>
+          </div>
 
-          <VehicleTimeline vehicle={vehicle} />
+          {drawerMode === 'status' && (
+            <>
+              <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="font-semibold text-slate-950">Vehicle summary</h3>
+                <div className="mt-4 grid gap-x-6 gap-y-4 sm:grid-cols-2">
+                  <Info label="Vehicle #" value={cleanDisplay(vehicle.vehicleNumber) || '-'} />
+                  <Info label="Build / Design" value={getBuildDesignLabel(vehicle)} />
+                  <Info label="VIN" value={cleanDisplay(vehicle.vin) || '-'} />
+                  <Info label="Model Year" value={vehicle.modelYear ? String(vehicle.modelYear) : '-'} />
+                  <Info label="Armouring Level" value={cleanDisplay(vehicle.armoringLevel) || '-'} />
+                  <Info label="Facility / Plant" value={cleanDisplay(vehicle.facility) || '-'} />
+                </div>
+              </section>
+
+              <VehicleTimeline vehicle={vehicle} />
+            </>
+          )}
 
           {message && (
             <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
@@ -1425,69 +1760,50 @@ function VehicleDetailPanel({
             </div>
           )}
 
-          {permissions.canEditProduction && (
+          {drawerMode === 'edit' && (
             <form onSubmit={updateVehicle} className="rounded-lg border border-slate-200 p-4">
-              <h3 className="font-semibold text-slate-950">Update vehicle</h3>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <label className="text-sm font-medium text-slate-700">
-                  Stage
-                  <select
-                    className="mt-1 min-h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
-                    value={productionStatus}
-                    onChange={(event) => setProductionStatus(event.target.value as ProductionStatus)}
-                  >
-                    {statusOrder.map((status) => (
-                      <option key={status} value={status}>
-                        {status}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="text-sm font-medium text-slate-700">
-                  Planned finish
-                  <input
-                    className="mt-1 min-h-10 w-full rounded-md border border-slate-300 px-3 text-sm"
-                    type="date"
-                    value={expectedCompletionDate}
-                    onChange={(event) => setExpectedCompletionDate(event.target.value)}
-                  />
-                </label>
-                <label className="text-sm font-medium text-slate-700">
-                  Actual finish
-                  <input
-                    className="mt-1 min-h-10 w-full rounded-md border border-slate-300 px-3 text-sm"
-                    type="date"
-                    value={actualCompletionDate}
-                    onChange={(event) => setActualCompletionDate(event.target.value)}
-                  />
-                </label>
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h3 className="font-semibold text-slate-950">Update vehicle</h3>
+                  <p className="mt-1 text-sm text-slate-500">
+                    {editableDetailFields.length > 0
+                      ? `${session.organization} can edit ${editableDetailFields.length} managed field${editableDetailFields.length === 1 ? '' : 's'}.`
+                      : 'View-only access for this vehicle.'}
+                  </p>
+                </div>
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-500">
+                  Field ownership enforced
+                </span>
               </div>
-              <label className="mt-3 block text-sm font-medium text-slate-700">
-                Notes for both teams
-                <textarea
-                  className="mt-1 min-h-24 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  value={notes}
-                  onChange={(event) => setNotes(event.target.value)}
-                />
-              </label>
-              <label className="mt-3 block text-sm font-medium text-slate-700">
-                Private MEVA notes
-                <textarea
-                  className="mt-1 min-h-24 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  value={mevaNotes}
-                  onChange={(event) => setMevaNotes(event.target.value)}
-                />
-              </label>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                {detailUpdateFields.map((field) => (
+                  <DetailEditableField
+                    key={field.key}
+                    field={field}
+                    value={draft[field.key]}
+                    canEdit={canEditField(session.role, field.key)}
+                    canObject={canObjectToField(session.role, field.key)}
+                    activeObjection={activeFieldObjections.find((objection) => objection.fieldKey === field.key)}
+                    objections={fieldObjections.filter((objection) => objection.fieldKey === field.key)}
+                    canManageObjection={activeFieldObjections.some(
+                      (objection) => objection.fieldKey === field.key && objection.responsibleRole === session.role,
+                    )}
+                    onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))}
+                    onCreateObjection={(input) => createObjection({ fieldKey: field.key, ...input })}
+                    onUpdateObjection={updateFieldObjection}
+                  />
+                ))}
+              </div>
               <button
                 className="mt-4 min-h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white disabled:bg-slate-400"
-                disabled={isSaving}
+                disabled={isSaving || editableDetailFields.length === 0}
               >
-                Save update
+                {isSaving ? 'Saving update' : 'Save permitted fields'}
               </button>
             </form>
           )}
 
-          {permissions.canOpenDisputes && (
+          {drawerMode === 'status' && permissions.canOpenDisputes && (
             <form onSubmit={openDispute} className="rounded-lg border border-red-200 bg-red-50 p-4">
               <h3 className="font-semibold text-slate-950">Raise an issue</h3>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -1539,7 +1855,7 @@ function VehicleDetailPanel({
             </form>
           )}
 
-          {permissions.canViewDisputes && (
+          {drawerMode === 'status' && permissions.canViewDisputes && (
             <section className="rounded-lg border border-slate-200 p-4">
               <h3 className="font-semibold text-slate-950">Issues</h3>
               <div className="mt-3 space-y-3">
@@ -1631,6 +1947,172 @@ function VehicleDetailPanel({
   );
 }
 
+function DetailEditableField({
+  field,
+  value,
+  canEdit,
+  canObject,
+  activeObjection,
+  objections,
+  canManageObjection,
+  onChange,
+  onCreateObjection,
+  onUpdateObjection,
+}: {
+  field: (typeof detailUpdateFields)[number];
+  value: string;
+  canEdit: boolean;
+  canObject: boolean;
+  activeObjection?: FieldObjection;
+  objections: FieldObjection[];
+  canManageObjection: boolean;
+  onChange: (value: string) => void;
+  onCreateObjection: (input: { currentValue: string; reason: string; suggestedValue: string; comment?: string }) => Promise<boolean>;
+  onUpdateObjection: (objection: FieldObjection, status: FieldObjectionStatus) => void;
+}) {
+  const help = getFieldHelp(field.key);
+  const [isObjecting, setIsObjecting] = useState(false);
+  const [reason, setReason] = useState('');
+  const [suggestedValue, setSuggestedValue] = useState('');
+  const [comment, setComment] = useState('');
+
+  async function submitObjection() {
+    const created = await onCreateObjection({
+      currentValue: value,
+      reason,
+      suggestedValue,
+      comment,
+    });
+
+    if (created) {
+      setIsObjecting(false);
+      setReason('');
+      setSuggestedValue('');
+      setComment('');
+    }
+  }
+
+  return (
+    <div className="text-sm font-medium text-slate-700" title={help}>
+      <span className="flex flex-wrap items-center gap-2">
+        {field.label}
+        <span
+          className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+            canEdit ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-500'
+          }`}
+        >
+          {getOwnerLabel(field.key)}
+        </span>
+        {activeObjection && (
+          <span className="rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700">
+            Objected
+          </span>
+        )}
+      </span>
+      {field.kind === 'status' ? (
+        <select
+          className={fieldInputClass(canEdit, Boolean(activeObjection))}
+          disabled={!canEdit}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          {statusOrder.map((status) => (
+            <option key={status} value={status}>
+              {status}
+            </option>
+          ))}
+        </select>
+      ) : field.kind === 'textarea' ? (
+        <textarea
+          className={`${fieldInputClass(canEdit, Boolean(activeObjection))} min-h-24 py-2`}
+          disabled={!canEdit}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      ) : (
+        <input
+          className={fieldInputClass(canEdit, Boolean(activeObjection))}
+          disabled={!canEdit}
+          type={field.kind === 'date' ? 'date' : 'text'}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      )}
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        {!canEdit && <span className="text-xs font-normal text-slate-500">Read-only for your role</span>}
+        {canObject && !activeObjection && (
+          <button
+            className="text-xs font-semibold text-red-700 underline-offset-4 hover:underline"
+            onClick={() => setIsObjecting((current) => !current)}
+            type="button"
+          >
+            {isObjecting ? 'Cancel objection' : 'Object to field'}
+          </button>
+        )}
+      </div>
+      {activeObjection && (
+        <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+          <div className="font-semibold">
+            {activeObjection.status}: {activeObjection.reason}
+          </div>
+          <div className="mt-1">Suggested: {activeObjection.suggestedValue}</div>
+          {canManageObjection && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {(['Reviewed', 'Accepted', 'Rejected', 'Resolved'] as FieldObjectionStatus[]).map((status) => (
+                <button
+                  key={status}
+                  className="rounded-md border border-red-200 bg-white px-2 py-1 text-[11px] font-semibold text-red-700"
+                  onClick={() => onUpdateObjection(activeObjection, status)}
+                  type="button"
+                >
+                  {status}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {!activeObjection && objections.length > 0 && (
+        <div className="mt-2 text-xs text-slate-500">
+          {objections.length} prior objection{objections.length === 1 ? '' : 's'} recorded.
+        </div>
+      )}
+      {isObjecting && (
+        <div className="mt-2 rounded-md border border-red-200 bg-red-50 p-3">
+          <div className="grid gap-2">
+            <input
+              className="min-h-9 rounded-md border border-red-200 bg-white px-3 text-xs font-normal"
+              placeholder="Reason"
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+            />
+            <input
+              className="min-h-9 rounded-md border border-red-200 bg-white px-3 text-xs font-normal"
+              placeholder="Suggested corrected value"
+              value={suggestedValue}
+              onChange={(event) => setSuggestedValue(event.target.value)}
+            />
+            <textarea
+              className="min-h-16 rounded-md border border-red-200 bg-white px-3 py-2 text-xs font-normal"
+              placeholder="Optional comment"
+              value={comment}
+              onChange={(event) => setComment(event.target.value)}
+            />
+          </div>
+          <button
+            className="mt-2 min-h-9 rounded-md bg-red-700 px-3 text-xs font-semibold text-white disabled:bg-red-300"
+            disabled={!reason.trim() || !suggestedValue.trim()}
+            onClick={submitObjection}
+            type="button"
+          >
+            Submit objection
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Info({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0 border-t border-slate-100 pt-3 first:border-t-0 first:pt-0 sm:first:border-t sm:first:pt-3">
@@ -1668,6 +2150,10 @@ function getBuildDesignLabel(vehicle: ProductionVehicle) {
 
 function getActualOrForecastFinish(vehicle: ProductionVehicle) {
   return vehicle.actualProductionCompletionDate || vehicle.actualCompletionDate || vehicle.expectedCompletionDate;
+}
+
+function isActiveFieldObjection(objection: FieldObjection) {
+  return objection.status === 'Open' || objection.status === 'Reviewed';
 }
 
 function getLatestNote(vehicle: ProductionVehicle) {
