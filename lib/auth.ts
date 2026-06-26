@@ -94,7 +94,7 @@ export async function getCurrentSession() {
 
 export function getPermissions(role: UserRole): RolePermissions {
   return {
-    canEditProduction: role === 'MEVA',
+    canEditProduction: role !== 'GUEST',
     canViewInternalNotes: role === 'MEVA',
     canOpenDisputes: role === 'ALPINE',
     canRespondToDisputes: role === 'MEVA',

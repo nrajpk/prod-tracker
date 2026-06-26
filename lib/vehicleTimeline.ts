@@ -3,6 +3,10 @@ import type {
   ProductionStatus,
   ProductionVehicle,
 } from '@/lib/types';
+import {
+  getFieldOwner as getDependencyFieldOwner,
+  getFieldTooltip as getDependencyFieldTooltip,
+} from '@/lib/fieldPermissions';
 
 export type JourneyPhase =
   | 'Scheduled'
@@ -12,7 +16,7 @@ export type JourneyPhase =
   | 'Received';
 
 export type TimelineStageState = 'completed' | 'current' | 'pending';
-export type FieldOwner = 'ALPINE' | 'MEVA' | 'MAVJ' | 'SHARED';
+export type FieldOwner = 'ALPINE' | 'MEVA' | 'MAVJ' | 'SHARED' | 'SYSTEM' | 'UNCLEAR';
 export type DashboardBucketKey =
   | 'orders'
   | 'atMeva'
@@ -27,6 +31,8 @@ export interface StageSupportingField {
   value: string;
   owner: FieldOwner;
   defaultVisible: boolean;
+  secondaryLabel?: string;
+  secondaryValue?: string;
 }
 
 export interface StageFieldDefinition {
@@ -34,6 +40,8 @@ export interface StageFieldDefinition {
   label: string;
   owner: FieldOwner;
   defaultVisible?: boolean;
+  secondaryKey?: keyof ProductionVehicle;
+  secondaryLabel?: string;
 }
 
 export interface VehicleDetailFieldSection {
@@ -106,41 +114,6 @@ export const STATUS_TO_PHASE_MAP: Record<ProductionStatus, JourneyPhase> = {
   Received: 'Received',
 };
 
-export const FIELD_OWNERSHIP_MAP: Partial<Record<keyof ProductionVehicle, FieldOwner>> = {
-  vehicleNumber: 'SHARED',
-  vehicle: 'SHARED',
-  designStyle: 'SHARED',
-  modelYear: 'SHARED',
-  armoringLevel: 'SHARED',
-  expectedCompletionDate: 'MEVA',
-  productionStatus: 'MEVA',
-  productionSubStatus: 'MEVA',
-  blockerType: 'SHARED',
-  blockerStatus: 'MEVA',
-  blockerStartedAt: 'MEVA',
-  blockerResolvedAt: 'MEVA',
-  blockerDays: 'MEVA',
-  chassisShippedFromAlpineDate: 'ALPINE',
-  facility: 'MEVA',
-  vin: 'SHARED',
-  shippingDaysToMeva: 'SHARED',
-  designChangeCompletedDate: 'SHARED',
-  notes: 'SHARED',
-  scheduleVarianceDays: 'MEVA',
-  chassisArrivalActualDate: 'MEVA',
-  chassisArrivalExpectedDate: 'MEVA',
-  actualProductionTime: 'MEVA',
-  daysAtMeva: 'MEVA',
-  daysMevaTookToFinish: 'MEVA',
-  actualProductionCompletionDate: 'MEVA',
-  actualCompletionDate: 'MEVA',
-  currentStatus: 'MEVA',
-  shippedFromMevaDate: 'MEVA',
-  shippingDaysToAlpine: 'SHARED',
-  arrivedAtAlpineDate: 'ALPINE',
-  alpineAssessment: 'ALPINE',
-};
-
 export const STAGE_OWNER_MAP: Record<ProductionStatus, FieldOwner[]> = {
   Scheduled: ['ALPINE', 'MEVA'],
   'Shipped to MEVA': ['ALPINE'],
@@ -160,7 +133,14 @@ export const STAGE_FIELD_MAP: Record<ProductionStatus, StageFieldDefinition[]> =
   ],
   'Shipped to MEVA': [
     { key: 'chassisShippedFromAlpineDate', label: 'Chassis Shipped from Alpine', owner: 'ALPINE', defaultVisible: true },
-    { key: 'shippingDaysToMeva', label: 'Shipping Days Alpine to MEVA', owner: 'SHARED', defaultVisible: true },
+    {
+      key: 'chassisArrivalExpectedDate',
+      label: 'MEVA Arrival Date',
+      owner: 'MEVA',
+      defaultVisible: true,
+      secondaryKey: 'shippingDaysToMeva',
+      secondaryLabel: 'Transit time',
+    },
     { key: 'facility', label: 'Destination Facility', owner: 'MEVA', defaultVisible: true },
   ],
   'Design Confirmation Pending': [
@@ -289,6 +269,7 @@ export const FIELD_TOOLTIP_TEXT: Record<string, string> = {
   'Expected Completion Date': 'The expected completion date.',
   'Actual / Forecast Finish': 'The actual finish date if available, otherwise the expected finish date.',
   'Chassis Shipped from Alpine': 'The date Alpine sent the chassis to MEVA / MAVJ.',
+  'MEVA Arrival Date': 'The date the chassis reached MEVA / MAVJ.',
   'Chassis Arrived at MEVA': 'The date the chassis reached the production facility.',
   'Shipping Days Alpine to MEVA': 'Number of days taken for the chassis to reach MEVA / MAVJ.',
   'Design Change / Confirmation Time': 'Time taken to complete design confirmation or design changes.',
@@ -311,8 +292,8 @@ export const FIELD_TOOLTIP_TEXT: Record<string, string> = {
   'Pending Dispatch Notes': 'Most recent note before the vehicle leaves MEVA / MAVJ.',
 };
 
-export function getFieldTooltip(label: string) {
-  return FIELD_TOOLTIP_TEXT[label];
+export function getFieldTooltip(fieldKeyOrLabel: string) {
+  return getDependencyFieldTooltip(fieldKeyOrLabel) || FIELD_TOOLTIP_TEXT[fieldKeyOrLabel];
 }
 
 export function getWorkflowStatus(vehicle: ProductionVehicle) {
@@ -387,11 +368,19 @@ export function getStageSupportingFields(
 ): StageSupportingField[] {
   return STAGE_FIELD_MAP[stage]
     .filter((definition) => !options.defaultOnly || definition.defaultVisible)
-    .map((definition) => ({
-      ...definition,
-      defaultVisible: Boolean(definition.defaultVisible),
-      value: formatFieldValue(vehicle, definition.key),
-    }))
+    .map((definition) => {
+      const secondaryValue = definition.secondaryKey
+        ? formatFieldValue(vehicle, definition.secondaryKey)
+        : undefined;
+
+      return {
+        ...definition,
+        owner: getDependencyFieldOwner(definition.key) as FieldOwner,
+        defaultVisible: Boolean(definition.defaultVisible),
+        value: formatFieldValue(vehicle, definition.key),
+        secondaryValue: secondaryValue === '-' ? undefined : secondaryValue,
+      };
+    })
     .filter((item) => item.value !== '-');
 }
 

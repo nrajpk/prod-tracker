@@ -22,7 +22,12 @@ import {
 
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
 const AIRTABLE_PAT = process.env.AIRTABLE_PAT;
-const AIRTABLE_TABLE_NAME = process.env.AIRTABLE_TABLE_NAME || 'Vehicles';
+const AIRTABLE_VEHICLES_TABLE =
+  process.env.AIRTABLE_VEHICLES_TABLE_ID || process.env.AIRTABLE_TABLE_NAME || 'tblnUSpFuIpWsehRr';
+const AIRTABLE_LOGISTICS_TABLE =
+  process.env.AIRTABLE_LOGISTICS_TABLE_ID || process.env.AIRTABLE_LOGISTICS_TABLE_NAME || 'tblZYcmVkUrxDA3hm';
+const AIRTABLE_FINANCIALS_TABLE =
+  process.env.AIRTABLE_FINANCIALS_TABLE_ID || process.env.AIRTABLE_FINANCIALS_TABLE_NAME || 'tbllMmnnaxYaeMCZZ';
 
 class AirtableError extends Error {
   constructor(
@@ -51,6 +56,7 @@ const fieldAliases = {
   chassisShippedFromAlpineDate: [
     'Date chassis was shipped from Alpine',
     'Date shipped from Alpine',
+    'Chassis_Shipped_From_Alpine',
   ],
   chassisArrivalExpectedDate: [
     'Chassis arrival Date at MEVA',
@@ -89,6 +95,10 @@ const fieldAliases = {
     "ALPINE'S ASSESSMENT OF THE VEHICLE UPON RECEIPT",
     'Alpine_Claimed_Arrival',
   ],
+  basePriceUsd: ['Base_Price_USD'],
+  conditionalPriceUsd: ['Conditional_Price_USD'],
+  conditionalDeadline: ['Conditional_Deadline'],
+  paymentNotes: ['Payment_Notes'],
 } as const;
 
 type FieldKey = keyof typeof fieldAliases;
@@ -105,7 +115,7 @@ export async function GET() {
       );
     }
 
-    const records = await fetchAirtableRecords();
+    const records = await fetchJoinedAirtableRecords();
     const vehicles = records
       .map(mapAirtableVehicle)
       .filter((vehicle): vehicle is ProductionVehicle => Boolean(vehicle))
@@ -129,7 +139,7 @@ export async function GET() {
       return NextResponse.json(
         {
           error: 'Airtable request failed.',
-          detail: `Airtable returned ${error.status}. Check AIRTABLE_PAT, AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME, and AIRTABLE_SORT_FIELD in Vercel.`,
+          detail: `Airtable returned ${error.status}. Check AIRTABLE_PAT, AIRTABLE_BASE_ID, and Airtable table configuration in Vercel.`,
         },
         { status: 502 },
       );
@@ -154,21 +164,45 @@ function sanitizeVehicleForRole(vehicle: ProductionVehicle, canViewInternalNotes
   };
 }
 
-async function fetchAirtableRecords() {
+async function fetchJoinedAirtableRecords() {
+  const [vehicleRecords, logisticsRecords, financialRecords] = await Promise.all([
+    fetchAirtableRecords(AIRTABLE_VEHICLES_TABLE),
+    fetchAirtableRecords(AIRTABLE_LOGISTICS_TABLE),
+    fetchAirtableRecords(AIRTABLE_FINANCIALS_TABLE),
+  ]);
+
+  const logisticsByVehicleId = indexRecordsByVehicleId(logisticsRecords);
+  const financialsByVehicleId = indexRecordsByVehicleId(financialRecords);
+
+  return vehicleRecords.map((vehicleRecord) => {
+    const vehicleId = asString(getField(vehicleRecord.fields, 'vehicleNumber'));
+
+    return {
+      ...vehicleRecord,
+      fields: {
+        ...vehicleRecord.fields,
+        ...(vehicleId ? logisticsByVehicleId.get(vehicleId)?.fields : {}),
+        ...(vehicleId ? financialsByVehicleId.get(vehicleId)?.fields : {}),
+        ...vehicleRecord.fields,
+      },
+    };
+  });
+}
+
+async function fetchAirtableRecords(table: string) {
   const records: RawAirtableRecord[] = [];
   let offset: string | undefined;
 
   do {
     const url = new URL(
-      `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_TABLE_NAME)}`,
+      `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(table)}`,
     );
 
     if (offset) {
       url.searchParams.set('offset', offset);
     }
 
-    const sortField = process.env.AIRTABLE_SORT_FIELD || 'Vehicle_ID';
-    url.searchParams.set('sort[0][field]', sortField);
+    url.searchParams.set('sort[0][field]', 'Vehicle_ID');
     url.searchParams.set('sort[0][direction]', 'asc');
 
     const response = await fetch(url, {
@@ -193,6 +227,20 @@ async function fetchAirtableRecords() {
   } while (offset);
 
   return records;
+}
+
+function indexRecordsByVehicleId(records: RawAirtableRecord[]) {
+  const index = new Map<string, RawAirtableRecord>();
+
+  for (const record of records) {
+    const vehicleId = asString(getField(record.fields, 'vehicleNumber'));
+
+    if (vehicleId) {
+      index.set(vehicleId, record);
+    }
+  }
+
+  return index;
 }
 
 function mapAirtableVehicle(record: RawAirtableRecord): ProductionVehicle | null {
@@ -263,6 +311,10 @@ function mapAirtableVehicle(record: RawAirtableRecord): ProductionVehicle | null
     notes: asString(getField(record.fields, 'notes')),
     currentStatus: asString(getField(record.fields, 'currentStatus')),
     alpineAssessment: asString(getField(record.fields, 'alpineAssessment')),
+    basePriceUsd: asString(getField(record.fields, 'basePriceUsd')),
+    conditionalPriceUsd: asString(getField(record.fields, 'conditionalPriceUsd')),
+    conditionalDeadline: asDateString(getField(record.fields, 'conditionalDeadline')),
+    paymentNotes: asString(getField(record.fields, 'paymentNotes')),
     risk: calculateRisk(productionStatus, expectedCompletionDate, scheduleVarianceDays),
   };
 

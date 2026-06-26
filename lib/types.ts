@@ -25,6 +25,8 @@ export type DisputeStatus =
   | 'Alpine Accepted'
   | 'Escalated'
   | 'Resolved';
+export type FieldObjectionStatus = 'Open' | 'Reviewed' | 'Accepted' | 'Rejected' | 'Resolved';
+export type FieldObjectionResponsibleRole = 'MEVA' | 'ALPINE' | 'SHARED';
 
 export interface RawAirtableRecord {
   id: string;
@@ -77,6 +79,10 @@ export interface ProductionVehicle {
   notes?: string;
   currentStatus?: string;
   alpineAssessment?: string;
+  basePriceUsd?: string;
+  conditionalPriceUsd?: string;
+  conditionalDeadline?: string;
+  paymentNotes?: string;
   risk: OperationalRisk;
 }
 
@@ -111,6 +117,23 @@ export interface VehicleDispute {
   createdAt: string;
   updatedAt: string;
   resolvedAt?: string;
+}
+
+export interface FieldObjection {
+  id: string;
+  vehicleId: string;
+  fieldKey: string;
+  fieldLabel: string;
+  stage: string;
+  currentValue: string;
+  objectedBy: UserRole;
+  responsibleRole: FieldObjectionResponsibleRole;
+  reason: string;
+  suggestedValue: string;
+  comment?: string;
+  status: FieldObjectionStatus;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ProductionSummary {
